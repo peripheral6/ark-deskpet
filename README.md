@@ -2,9 +2,20 @@
 
 基于 [AstrariaX/Ark-codex-skill](https://github.com/AstrariaX/Ark-codex-skill) 的独立Windows桌宠软件，由增强版skill模板派生。不是Codex原生Custom pets。
 
+本仓库负责运行桌宠；[增强版skill](https://github.com/peripheral6/Ark-codex-skill/tree/feat/event-driven-deskpet-yao)负责从PRTS导出新角色并生成项目。发布前检查见 [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)。
+
 ## 启动
 
 需要Python 3.10+，在本目录执行 `python setup_env.py . --skip-browser`，然后双击 `启动桌宠.bat`。Python 3.14已通过事件与UI测试。
+
+```powershell
+git clone https://github.com/peripheral6/ark-deskpet.git
+cd ark-deskpet
+python setup_env.py . --skip-browser
+.\启动桌宠.bat
+```
+
+这是源码运行版，不是无需Python的exe。依赖安装在本目录的`.venv`中；首次安装需要联网。建议使用已经测试的Python 3.14。
 
 自带遥和予愿安洁莉娜。右键可切换角色、调整倍速/大小和设置；双击隐藏字幕。字幕仅显示状态，中英文切换、居中、透明背景。
 
@@ -14,6 +25,13 @@
 留空时监听所有本地任务，并持续发现新日志：任一任务运行就保持移动，全部结束才显示最后的结束状态。完成字幕10秒后隐藏。日志写入有延迟，异常退出未写终止事件时无法可靠判定结束。ChatGPT进程检测不等于读取ChatGPT任务状态。
 
 同一目录通过Windows系统锁防止重复启动；再次启动会显示已有桌宠。启动、恢复显示和动作尺寸变化时自动校正位置，避免窗口移出屏幕。
+
+## 更新与排查
+
+- 更新前退出桌宠，保留个人`settings.json`和`.venv`；不要把这些文件提交到仓库或发给其他用户。
+- 多任务不联动：设置中清空跟踪任务ID，并开启动作联动。它监听本地日志，不跟随当前打开的任务页面。
+- 看不到窗口：再次启动以恢复显示；仍有问题时运行`调试运行.bat`检查错误。
+- 长期运行中但没有任务：可能存在未写入终止事件的旧日志；不要以删除真实Codex日志作为排查步骤。
 
 ## 维护与验证
 
