@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 
 import monitor_events as codex_monitor
 from single_instance import InstanceLock
+from usage_panel import UsageController
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PETS_DIR = os.path.join(BASE_DIR, "pets")
@@ -49,6 +50,7 @@ SHUTDOWN_FLAG = os.path.join(BASE_DIR, "pet_shutdown.flag")
 DISABLED_FLAG = os.path.join(BASE_DIR, "pet_disabled.flag")
 SHOW_FLAG = os.path.join(BASE_DIR, "pet_show.flag")
 HIDE_FLAG = os.path.join(BASE_DIR, "pet_hide.flag")
+RECOVER_FLAG = os.path.join(BASE_DIR, "pet_recover.flag")
 WATCHER_PATH = os.path.join(BASE_DIR, "codex_pet_launcher.pyw")
 PYW_PATH = os.path.join(BASE_DIR, ".venv", "Scripts", "pythonw.exe")
 
@@ -103,14 +105,26 @@ DEFAULT_SETTINGS = {
     "subtitle_language": "zh",
     "status_actions": True,
     "monitor_thread_id": None,
+    "usage_prices": {
+        "gpt-6-astra": {"input": 10.0, "cached": 1.0, "write": 12.5, "output": 50.0, "as_of": "2026-10-30"},
+        "gpt-6.1-sol": {"input": 2.0, "cached": 0.1, "write": 2.5, "output": 10.0, "as_of": "2026-10-30"},
+        "gpt-6.1-terra": {"input": 1.0, "cached": 0.05, "write": 1.25, "output": 5.0, "as_of": "2026-10-30"},
+        "gpt-6-luna": {"input": 0.1, "cached": 0.01, "write": 0.125, "output": 0.5, "as_of": "2026-10-30"},
+    },
 }
 
 
 def load_settings():
     data = dict(DEFAULT_SETTINGS)
+    data["usage_prices"] = dict(DEFAULT_SETTINGS["usage_prices"])
     try:
         with open(SETTINGS_PATH, encoding="utf-8") as f:
-            data.update(json.load(f))
+            stored = json.load(f)
+            data.update(stored)
+            prices = dict(DEFAULT_SETTINGS["usage_prices"])
+            if isinstance(stored.get("usage_prices"), dict):
+                prices.update(stored["usage_prices"])
+            data["usage_prices"] = prices
     except Exception:
         pass
     return data
@@ -347,8 +361,9 @@ class PetWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowFlags(
-            Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
+            Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
         )
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_NoSystemBackground)
         self.setMouseTracking(True)
@@ -401,6 +416,10 @@ class PetWindow(QWidget):
         self.caption_event_key = None
         self.completed_caption_deadline = None
         self.tray_hidden = False
+        self.latest_status = {}
+        self.effective_status = {}
+        self.manual_until = None
+        self.usage_controller = UsageController(self)
 
         self.timer = QTimer(self)
         self.timer.setInterval(self.tick_ms())
@@ -420,7 +439,7 @@ class PetWindow(QWidget):
         )
 
         self.status_timer = QTimer(self)
-        self.status_timer.setInterval(250)
+        self.status_timer.setInterval(1000)
         self.status_timer.timeout.connect(self.refresh_status)
         self.status_timer.start()
 
@@ -460,6 +479,68 @@ class PetWindow(QWidget):
         self.refresh_status()
         self.ensure_on_screen()
         self.show()
+
+    def enterEvent(self, event):
+        self.usage_controller.hover.start()
+        super().enterEvent(event)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(0, self.keep_on_top)
+
+    def keep_on_top(self):
+        if not self.isVisible():
+            return
+        try:
+            user32 = ctypes.windll.user32
+            user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND,
+                                            ctypes.c_int, ctypes.c_int,
+                                            ctypes.c_int, ctypes.c_int, wintypes.UINT]
+            user32.SetWindowPos.restype = wintypes.BOOL
+            flags = 0x0001 | 0x0002 | 0x0010  # NOSIZE | NOMOVE | NOACTIVATE
+            user32.SetWindowPos(wintypes.HWND(int(self.winId())), ctypes.c_void_p(-1),
+                                0, 0, 0, 0, flags)
+        except (AttributeError, OSError, TypeError, ValueError):
+            pass
+
+    def leaveEvent(self, event):
+        self.usage_controller.hover.stop()
+        super().leaveEvent(event)
+
+    def open_usage_dashboard(self):
+        self.usage_controller.open_dashboard()
+
+    def follow_task(self, task_id):
+        self.settings['monitor_thread_id'] = task_id
+        self.status_event_key = None
+        self.caption_event_key = None
+        self.manual_until = None
+        self.save_position()
+        self.refresh_status()
+
+    def recover_pet(self):
+        screen = QGuiApplication.primaryScreen().availableGeometry()
+        self.move(screen.center().x() - self.width() // 2,
+                  screen.center().y() - self.height() // 2)
+        self.show_from_tray()
+        self.save_position()
+
+    def manual_action(self, name):
+        self.manual_until = time.monotonic() + 8.0
+        self.set_state(name, hold=name != 'interact')
+
+    def resume_status_action(self):
+        self.manual_until = None
+        if not self.settings.get('status_actions', True):
+            self.set_state('idle')
+            return
+        phase = self.effective_status.get('phase')
+        if self.status_active:
+            self.set_state('move', hold=True)
+        elif phase in ('interrupted', 'failed'):
+            self.set_state('sit', hold=True)
+        else:
+            self.set_state('idle')
 
     def ensure_on_screen(self):
         screen = QGuiApplication.screenAt(self.geometry().center()) or QGuiApplication.primaryScreen()
@@ -538,7 +619,7 @@ class PetWindow(QWidget):
     def schedule_idle(self):
         self.sit_timer.stop()
         self.sleep_timer.stop()
-        if self.state == "sleep" or (self.status_active and self.settings.get("status_actions", True)):
+        if self.state == "sleep" or self.status_active:
             return
         self.sit_timer.start(40000 + random.randint(0, 20000))
         self.sleep_timer.start(90000)
@@ -568,7 +649,7 @@ class PetWindow(QWidget):
             self.frame_index = (self.frame_index + 1) % count
         elif self.state in ("interact", "sit"):
             if not self.hold_state and self.frame_index >= count - 1:
-                self.set_state("idle")
+                self.resume_status_action()
                 return
             self.frame_index = (self.frame_index + 1) % count
         else:
@@ -589,10 +670,7 @@ class PetWindow(QWidget):
                 image.width() * self.scale,
                 image.height() * self.scale,
             )
-            painter.save()
-            painter.setClipRect(QRectF(0, status_extra, self.width(), self.height()-status_extra))
             painter.drawImage(target, image)
-            painter.restore()
 
         if self.show_status and self.status_text:
             layout, bar_width, subtitle_height = self.subtitle_layout(self.width())
@@ -633,7 +711,7 @@ class PetWindow(QWidget):
                 if self.pre_drag_state in MANIFEST["states"]
                 else "idle"
             )
-            self.set_state(target, hold=self.pre_drag_hold)
+            self.resume_status_action()
         elif self.drag:
             self.move(self.press_window.x() + dx, self.press_window.y() + dy)
 
@@ -649,7 +727,7 @@ class PetWindow(QWidget):
                 if self.pre_drag_state in MANIFEST["states"]
                 else "idle"
             )
-            self.set_state(target, hold=self.pre_drag_hold)
+            self.resume_status_action()
             self.save_pet_state()
             return
         if self.press_global is None:
@@ -662,7 +740,7 @@ class PetWindow(QWidget):
         self.press_global = None
         self.press_window = None
         if held < 0.5 and moved < 36:
-            self.set_state("interact")
+            self.manual_action("interact")
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -670,25 +748,28 @@ class PetWindow(QWidget):
 
     def contextMenuEvent(self, event):
         menu = QMenu(self)
+        menu.addAction(QAction('任务与用量 / Tasks & usage', self, triggered=self.open_usage_dashboard))
+        menu.addAction(QAction('找回桌宠 / Recover pet', self, triggered=self.recover_pet))
+        menu.addSeparator()
         menu.addAction(
             QAction(
                 "坐下",
                 self,
-                triggered=lambda: self.set_state("sit", hold=True),
+                triggered=lambda: self.manual_action("sit"),
             )
         )
         menu.addAction(
             QAction(
                 "放松",
                 self,
-                triggered=lambda: self.set_state("idle", hold=True),
+                triggered=lambda: self.manual_action("idle"),
             )
         )
         menu.addAction(
             QAction(
                 "睡觉",
                 self,
-                triggered=lambda: self.set_state("sleep", hold=True),
+                triggered=lambda: self.manual_action("sleep"),
             )
         )
         menu.addSeparator()
@@ -828,6 +909,7 @@ class PetWindow(QWidget):
         if not self.auto_hide_fullscreen:
             if not self.isVisible():
                 self.show()
+            self.keep_on_top()
             return
         user32 = ctypes.windll.user32
         user32.GetForegroundWindow.restype = wintypes.HWND
@@ -839,6 +921,7 @@ class PetWindow(QWidget):
         if not hwnd or hwnd == int(self.winId()):
             if not self.isVisible():
                 self.show()
+            self.keep_on_top()
             return
         rect = wintypes.RECT()
         user32.GetWindowRect(hwnd, ctypes.byref(rect))
@@ -853,6 +936,8 @@ class PetWindow(QWidget):
             self.hide()
         elif not self.isVisible():
             self.show()
+        else:
+            self.keep_on_top()
 
     def hide_to_tray(self):
         self.tray_hidden = True
@@ -950,6 +1035,12 @@ class PetWindow(QWidget):
         return str(count)
 
     def refresh_status(self):
+        if os.path.exists(RECOVER_FLAG):
+            try:
+                os.remove(RECOVER_FLAG)
+            except OSError:
+                pass
+            self.recover_pet()
         if os.path.exists(HIDE_FLAG):
             try:
                 os.remove(HIDE_FLAG)
@@ -971,9 +1062,18 @@ class PetWindow(QWidget):
             if app is not None:
                 app.quit()
             return
-        status = codex_monitor.get_codex_status(self.settings.get("monitor_thread_id"))
+        status = codex_monitor.get_codex_status()
+        self.latest_status = status
+        selection = self.settings.get('monitor_thread_id')
+        if selection:
+            status = next((s for s in status.get('tasks', []) if s.get('task_id') == selection),
+                          dict(active=False, phase='unknown', event_key=None))
+        self.effective_status = status
         self.status_active = bool(status.get("active"))
+        if self.manual_until is not None and time.monotonic() >= self.manual_until and not self.drag:
+            self.resume_status_action()
         event_key = status.get("event_key")
+        # Track captions separately: dragging must not delay/restart their timeout.
         caption_key = (event_key, status.get("phase"), self.status_active)
         if caption_key != self.caption_event_key:
             self.caption_event_key = caption_key
@@ -982,8 +1082,8 @@ class PetWindow(QWidget):
                 if status.get("phase") == "completed" and not self.status_active
                 else None
             )
-        if (self.settings.get("status_actions", True) and event_key
-                and event_key != self.status_event_key and not self.drag):
+        if (self.settings.get('status_actions', True) and event_key
+                and event_key != self.status_event_key and not self.drag and self.manual_until is None):
             self.status_event_key = event_key
             phase = status.get("phase")
             if phase == "running":
@@ -1012,7 +1112,8 @@ class PetWindow(QWidget):
 def main():
     instance_lock = InstanceLock(BASE_DIR)
     if not instance_lock.acquire():
-        with open(SHOW_FLAG, "w", encoding="utf-8"):
+        # A second launch reveals the existing pet without overwriting its PID.
+        with open(RECOVER_FLAG if '--recover' in sys.argv else SHOW_FLAG, "w", encoding="utf-8"):
             pass
         return 0
     atexit.register(instance_lock.close)
@@ -1022,7 +1123,9 @@ def main():
     remove_disabled_flag()
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(True)
-    PetWindow()
+    window = PetWindow()
+    if '--recover' in sys.argv:
+        window.recover_pet()
     return app.exec()
 
 
