@@ -111,10 +111,10 @@ class RatesDialog(QDialog):
         self.setWindowTitle(words(owner, '模型参考价格', 'Model reference prices'))
         layout = QVBoxLayout(self)
         note = QLabel(words(owner,
-            '手动填写每百万Token的美元参考价。仅作API等价估算，不是订阅账单。\n'
-            '使用固定单价，不含工具费用、地区附加费或长上下文/服务层级变化。',
-            'Enter USD per million tokens. API-equivalent estimate, NOT your bill.\n'
-            'Flat reference rates exclude tools, regional, context and service-tier adjustments.'))
+            '手动填写每百万Token的美元参考价。仅作API等价估算，不是Codex订阅账单。\n'
+            '默认按标准短上下文和30分钟缓存写入计价；不含12小时缓存、长上下文、处理档位、地区和工具费用。',
+            'Enter USD per million tokens. API-equivalent estimate, not your Codex subscription bill.\n'
+            'Defaults use standard short-context and 30m cache-write rates; 12h cache, long context, processing tiers, regions and tool fees are excluded.'))
         note.setWordWrap(True)
         layout.addWidget(note)
         form = QFormLayout()

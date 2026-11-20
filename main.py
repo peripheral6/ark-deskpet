@@ -106,6 +106,8 @@ DEFAULT_SETTINGS = {
     "status_actions": True,
     "monitor_thread_id": None,
     "usage_prices": {
+        "gpt-6.2-astra": {"input": 8.0, "cached": 0.4, "write": 10.0, "output": 40.0, "as_of": "2026-11-17"},
+        "gpt-6.2-sol": {"input": 2.0, "cached": 0.1, "write": 2.5, "output": 10.0, "as_of": "2026-11-17"},
         "gpt-6-astra": {"input": 10.0, "cached": 1.0, "write": 12.5, "output": 50.0, "as_of": "2026-10-30"},
         "gpt-6.1-sol": {"input": 2.0, "cached": 0.1, "write": 2.5, "output": 10.0, "as_of": "2026-10-30"},
         "gpt-6.1-terra": {"input": 1.0, "cached": 0.05, "write": 1.25, "output": 5.0, "as_of": "2026-10-30"},
